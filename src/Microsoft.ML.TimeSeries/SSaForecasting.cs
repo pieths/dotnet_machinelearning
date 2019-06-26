@@ -31,8 +31,8 @@ namespace Microsoft.ML.Transforms.TimeSeries
     {
         internal const string Summary = "This transform forecasts using Singular Spectrum Analysis (SSA).";
         internal const string LoaderSignature = "SsaForecasting";
-        internal const string UserName = "SSA Spike Detection";
-        internal const string ShortName = "spike";
+        internal const string UserName = "SSA Forecast";
+        internal const string ShortName = "forecast";
 
         internal sealed class Options : TransformInputBase
         {
@@ -53,7 +53,16 @@ namespace Microsoft.ML.Transforms.TimeSeries
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "The flag determing whether the model is adaptive", ShortName = "adp", SortOrder = 14)]
             public bool IsAdaptive = false;
-            public int WindowSize;
+
+            [Argument(ArgumentType.Required, HelpText = "Window size", ShortName = "swnd", SortOrder = 5)]
+            public int WindowSize = 10;
+
+            [Argument(ArgumentType.Required, HelpText = "Series length", ShortName = "slen", SortOrder = 6)]
+            public int SeriesLength = 20;
+
+            [Argument(ArgumentType.Required, HelpText = "Train size", ShortName = "twnd", SortOrder = 7)]
+            public int TrainSize = 100;
+
             public RankSelectionMethod RankSelectionMethod;
             public int? Rank;
             public int? MaxRank;
@@ -61,8 +70,6 @@ namespace Microsoft.ML.Transforms.TimeSeries
             public bool ShouldStablize;
             public bool ShouldMaintainInfo;
             public GrowthRatio? MaxGrowth;
-            public int SeriesLength;
-            public int TrainSize;
             public int Horizon;
         }
 
