@@ -555,6 +555,189 @@ namespace Microsoft.ML.Tests
             Done();
         }
 
+        private static string EscapePath(string path)
+        {
+            return path.Replace("\\", "\\\\");
+        }
+
+        [Fact]
+        public void MulticlassLogisticRegressionOnnxConversionTest_UsingEntryPoints()
+        {
+            string dataPath = GetDataPath("iris-shuffled.csv");
+            string modelPath = System.IO.Path.GetTempPath() + Guid.NewGuid().ToString() + ".model.bin";
+            string onnxPath = System.IO.Path.GetTempPath() + Guid.NewGuid().ToString() + ".model.onnx";
+            string onnxJsonPath = System.IO.Path.GetTempPath() + Guid.NewGuid().ToString() + ".model.onnx.json";
+
+            /*
+             * JSON graph similar to nimbusml logistic regression on iris.
+             * The Transforms.OptionalColumnCreator node has been removed
+             * since it is does not support exporting to onnx.
+             * The Data.TextLoader node has been added to support reading
+             * the data in from disk.
+             */
+            string inputGraph = string.Format(@"
+            {{
+                'Inputs': {{
+                    'inputFile': '{0}'
+                }},
+                'Nodes': [
+                    {{
+                        'Name': 'Data.TextLoader',
+                        'Inputs':
+                        {{
+                            'InputFile': '$inputFile',
+                            'Arguments':
+                            {{
+                                'UseThreads': true,
+                                'HeaderFile': null,
+                                'MaxRows': null,
+                                'AllowQuoting': true,
+                                'AllowSparse': true,
+                                'InputSize': null,
+                                'Separator': [','],
+                                'TrimWhitespace': false,
+                                'HasHeader': false,
+                                'Column':
+                                [
+                                    {{'Name':'id','Type':null,'Source':[{{'Min':0,'Max':0,'AutoEnd':false,'VariableEnd':false,'AllOther':false,'ForceVector':false}}],'KeyCount':null}},
+                                    {{'Name':'Sepal_Length','Type':null,'Source':[{{'Min':1,'Max':1,'AutoEnd':false,'VariableEnd':false,'AllOther':false,'ForceVector':false}}],'KeyCount':null}},
+                                    {{'Name':'Sepal_Width','Type':null,'Source':[{{'Min':2,'Max':2,'AutoEnd':false,'VariableEnd':false,'AllOther':false,'ForceVector':false}}],'KeyCount':null}},
+                                    {{'Name':'Petal_Length','Type':null,'Source':[{{'Min':3,'Max':3,'AutoEnd':false,'VariableEnd':false,'AllOther':false,'ForceVector':false}}],'KeyCount':null}},
+                                    {{'Name':'Petal_Width','Type':null,'Source':[{{'Min':4,'Max':4,'AutoEnd':false,'VariableEnd':false,'AllOther':false,'ForceVector':false}}],'KeyCount':null}},
+                                    {{'Name':'Label','Type':null,'Source':[{{'Min':5,'Max':5,'AutoEnd':false,'VariableEnd':false,'AllOther':false,'ForceVector':false}}],'KeyCount':null}},
+                                    {{'Name':'Setosa','Type':null,'Source':[{{'Min':6,'Max':6,'AutoEnd':false,'VariableEnd':false,'AllOther':false,'ForceVector':false}}],'KeyCount':null}}
+                                ]
+                            }}
+                        }},
+                        'Outputs':
+                        {{
+                            'Data': '$optional_data'
+                        }}
+                    }},
+                    {{
+                        'Inputs': {{
+                            'Data': '$optional_data',
+                            'LabelColumn': 'Label',
+                            'TextKeyValues': false
+                        }},
+                        'Name': 'Transforms.LabelColumnKeyBooleanConverter',
+                        'Outputs': {{
+                            'Model': '$output_model2',
+                            'OutputData': '$label_data'
+                        }}
+                    }},
+                    {{
+                        'Inputs': {{
+                            'Data': '$label_data',
+                            'Features': [
+                                'Sepal_Length',
+                                'Sepal_Width',
+                                'Petal_Length',
+                                'Petal_Width',
+                                'Setosa'
+                            ]
+                        }},
+                        'Name': 'Transforms.FeatureCombiner',
+                        'Outputs': {{
+                            'Model': '$output_model3',
+                            'OutputData': '$output_data'
+                        }}
+                    }},
+                    {{
+                        'Inputs': {{
+                            'Caching': 'Auto',
+                            'DenseOptimizer': false,
+                            'EnforceNonNegativity': false,
+                            'FeatureColumnName': 'Features',
+                            'HistorySize': 20,
+                            'InitialWeightsDiameter': 0.0,
+                            'L1Regularization': 1.0,
+                            'L2Regularization': 1.0,
+                            'LabelColumnName': 'Label',
+                            'MaximumNumberOfIterations': 2147483647,
+                            'NormalizeFeatures': 'Auto',
+                            'OptimizationTolerance': 1e-07,
+                            'Quiet': false,
+                            'ShowTrainingStatistics': false,
+                            'StochasticGradientDescentInitilaizationTolerance': 0.0,
+                            'TrainingData': '$output_data',
+                            'UseThreads': true
+                        }},
+                        'Name': 'Trainers.LogisticRegressionClassifier',
+                        'Outputs': {{
+                            'PredictorModel': '$predictor_model'
+                        }}
+                    }},
+                    {{
+                        'Inputs': {{
+                            'PredictorModel': '$predictor_model',
+                            'TransformModels': [
+                                //'$output_model1',
+                                '$output_model2',
+                                '$output_model3'
+                            ]
+                        }},
+                        'Name': 'Transforms.ManyHeterogeneousModelCombiner',
+                        'Outputs': {{
+                            'PredictorModel': '$output_model'
+                        }}
+                    }}
+                ],
+                'Outputs': {{
+                    'output_model': '{1}'
+                }}
+            }}", EscapePath(dataPath), EscapePath(modelPath));
+
+            var jsonPath = DeleteOutputPath("graph.json");
+            File.WriteAllLines(jsonPath, new[] { inputGraph });
+
+            var args = new ExecuteGraphCommand.Arguments() { GraphPath = jsonPath };
+            var cmd = new ExecuteGraphCommand(Env, args);
+            cmd.Run();
+
+            /*
+             * Export the model to the onnx format.
+             */
+
+            inputGraph = string.Format(@"
+            {{
+                'Inputs': {{
+                    'model': '{0}'
+                }},
+                'Nodes': [
+                    {{
+                        'Inputs': {{
+                            'Domain': 'com.microsoft.models',
+                            'Json': '{1}',
+                            'Model': '$model',
+                            'Onnx': '{2}',
+                            'OnnxVersion': 'Experimental'
+                        }},
+                        'Name': 'Models.OnnxConverter',
+                        'Outputs': {{}}
+                    }}
+                ],
+                'Outputs': {{}}
+            }}
+            ", EscapePath(modelPath), EscapePath(onnxJsonPath), EscapePath(onnxPath));
+
+            jsonPath = DeleteOutputPath("graph.json");
+            File.WriteAllLines(jsonPath, new[] { inputGraph });
+
+            Env.ComponentCatalog.RegisterAssembly(typeof(OnnxExportExtensions).Assembly);
+
+            args = new ExecuteGraphCommand.Arguments() { GraphPath = jsonPath };
+            cmd = new ExecuteGraphCommand(Env, args);
+            cmd.Run();
+
+            File.Delete(modelPath);
+            File.Delete(onnxPath);
+            File.Delete(onnxJsonPath);
+
+            Done();
+        }
+
+
         [Fact]
         public void RemoveVariablesInPipelineTest()
         {
