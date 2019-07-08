@@ -4,12 +4,14 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using Google.Protobuf;
 using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
 using Microsoft.ML.Model.OnnxConverter;
 using Microsoft.ML.RunTests;
 using Microsoft.ML.Runtime;
@@ -400,6 +402,156 @@ namespace Microsoft.ML.Tests
             SaveOnnxModel(onnxModel, onnxFilePath, onnxTextPath);
 
             CheckEquality(subDir, onnxTextName, digitsOfPrecision: 2);
+            Done();
+        }
+
+        /*
+         * id,Sepal_Length,Sepal_Width,Petal_Length,Petal_Width,Label,Setosa
+         * 114,5.8,2.8,5.1,2.4,2,0.0
+         */
+        private class IrisData
+        {
+            [LoadColumn(0)]
+            public int Id { get; set; }
+
+            [LoadColumn(1)]
+            public float Sepal_Length { get; set; }
+
+            [LoadColumn(2)]
+            public float Sepal_Width { get; set; }
+
+            [LoadColumn(3)]
+            public float Petal_Length { get; set; }
+
+            [LoadColumn(4)]
+            public float Petal_Width { get; set; }
+
+            [LoadColumn(5)]
+            public int Label { get; set; }
+
+            [LoadColumn(6)]
+            public float Setosa { get; set; }
+
+            public String ToText()
+            {
+                return String.Format("{0}\t{1}\t{2}\t{3}\t{4}\t{5}",
+                    Sepal_Length.ToString(),
+                    Sepal_Width.ToString(),
+                    Petal_Length.ToString(),
+                    Petal_Width.ToString(),
+                    Label.ToString(),
+                    Setosa.ToString());
+            }
+        }
+        private class IrisDataPrediction
+        {
+            // Id
+            public Int32 Id { get; set; }
+
+            // Original label.
+            public Int32 Label { get; set; }
+
+            // Predicted label from the trainer.
+            public Int32 PredictedLabel { get; set; }
+
+            public String ToText()
+            {
+                return String.Format("{0}\t{1}\t{2}",
+                    Id.ToString(),
+                    Label.ToString(),
+                    PredictedLabel.ToString());
+            }
+        }
+
+        /*
+         * Simulates the following nimbusml code:
+         * 
+         *    df = pd.read_csv("path_to_ml_dotnet_repo\\test\\data\\iris-shuffled.csv")
+         *
+         *    X_train, X_test, y_train, y_test = \
+         *        train_test_split(df.loc[:, df.columns != 'Label'],
+         *                         df['Label'], shuffle=False, train_size=130)
+         *
+         *    lr = LogisticRegressionClassifier(feature=["Sepal_Length",
+         *                                               "Sepal_Width",
+         *                                               "Petal_Length",
+         *                                               "Petal_Width",
+         *                                               "Setosa"])
+         *    lr.fit(X_train, y_train)
+         *    scores = lr.predict(X_test)
+         *
+         *    lr.export_to_onnx("output.onnx", "com.microsoft.ml")
+         *
+         *    print(scores)
+         */
+        [Fact]
+        public void MulticlassLogisticRegressionOnnxConversionTest_2()
+        {
+            var mlContext = new MLContext(seed: 1);
+
+            string dataPath = GetDataPath("iris-shuffled.csv");
+            var data = mlContext.Data.LoadFromTextFile<IrisData>(dataPath,
+                separatorChar: ',',
+                hasHeader: true);
+
+            IEnumerable<IrisData> irisDataEnumerable =
+                mlContext.Data.CreateEnumerable<IrisData>(data, reuseRowObject: true);
+
+            var trainData = mlContext.Data.LoadFromEnumerable(irisDataEnumerable.Take(130));
+            var testData = mlContext.Data.LoadFromEnumerable(irisDataEnumerable.Skip(130));
+
+            var options = new LbfgsMaximumEntropyMulticlassTrainer.Options
+            {
+                Caching = CachingOptions.Auto,
+                DenseOptimizer = false,
+                EnforceNonNegativity = false,
+                FeatureColumnName = "Features",
+                HistorySize = 20,
+                InitialWeightsDiameter = 0.0f,
+                L1Regularization = 1.0f,
+                L2Regularization = 1.0f,
+                LabelColumnName = "Label",
+                MaximumNumberOfIterations = 2147483647,
+                NormalizeFeatures = NormalizeOption.Auto,
+                OptimizationTolerance = 1e-07f,
+                Quiet = false,
+                ShowTrainingStatistics = false,
+                StochasticGradientDescentInitilaizationTolerance = 0.0f,
+                UseThreads = true
+            };
+
+            var pipeline = mlContext.Transforms.Conversion.MapValueToKey("Label").
+                Append(mlContext.Transforms.Concatenate("Features", new[] {
+                    "Sepal_Length",
+                    "Sepal_Width",
+                    "Petal_Length",
+                    "Petal_Width",
+                    "Setosa"})).
+                Append(mlContext.Transforms.NormalizeMinMax("Features")).
+                Append(mlContext.MulticlassClassification.Trainers.LbfgsMaximumEntropy(options));
+
+            var model = pipeline.Fit(trainData);
+            var transformedData = model.Transform(testData);
+
+            var onnxModel = mlContext.Model.ConvertToOnnxProtobuf(model, data);
+
+            /*
+             * Convert the Label and PredictedLabel keys back to their
+             * original values and display the results.
+             */
+
+            var convertedPipeline = pipeline.
+                Append(mlContext.Transforms.Conversion.MapKeyToValue("Label")).
+                Append(mlContext.Transforms.Conversion.MapKeyToValue("PredictedLabel"));
+
+            transformedData = convertedPipeline.Fit(trainData).Transform(testData);
+
+            var predictions = mlContext.Data.CreateEnumerable<IrisDataPrediction>(transformedData, reuseRowObject: true);
+            foreach (IrisDataPrediction row in predictions)
+            {
+                Debug.WriteLine(row.ToText());
+            }
+
             Done();
         }
 
